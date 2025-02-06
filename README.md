@@ -47,21 +47,11 @@
 
 1. **下载脚本**
 
-   将脚本 `merged_ipv6.sh` 下载到你的 VPS 上。
-
-2. **赋予执行权限**
-
-   ```bash
-   chmod +x merged_ipv6.sh
+    ```bash
+   bash <(curl -l -s https://raw.githubusercontent.com/byJoey/addipv6/refs/heads/main/addipv6.sh)
    ```
 
-3. **以 Root 权限运行**
-
-   ```bash
-   sudo ./merged_ipv6.sh
-   ```
-
-4. **按提示操作**
+2. **按提示操作**
 
    根据屏幕显示的菜单，输入相应的选项数字，按照提示进行网卡选择、地址生成、配置更新或删除操作。
 
