@@ -42,35 +42,38 @@ function choose_interface() {
 
 function add_random_ipv6() {
     choose_interface
-    ipv6_addr=$(ip -6 addr show dev "$SELECTED_IFACE" scope global | grep -oP 'inet6 \K[^/]+' | head -n1)
-    if [ -z "$ipv6_addr" ]; then
+    ipv6_cidr=$(ip -6 addr show dev "$SELECTED_IFACE" scope global | awk '/inet6/ {print $2}' | head -n1)
+    if [ -z "$ipv6_cidr" ]; then
         echo "无法获取 $SELECTED_IFACE 的全局 IPv6 地址。"
         exit 1
     fi
-    IFS=':' read -r a b c d rest <<< "$ipv6_addr"
-    PREFIX="${a}:${b}:${c}:${d}"
-    echo "从 IPv6 地址 $ipv6_addr 提取的 /64 前缀为: $PREFIX"
+    BASE_ADDR=$(echo "$ipv6_cidr" | cut -d'/' -f1)
+    PLEN=$(echo "$ipv6_cidr" | cut -d'/' -f2)
+    echo "检测到IPv6地址: $ipv6_cidr"
+    echo "使用的网络: $BASE_ADDR/$PLEN"
+    # 如果前缀为 /128，则不支持随机生成其它地址
+    if [ "$PLEN" -eq 128 ]; then
+         echo "检测到前缀为 /128，不支持随机生成其它地址。"
+         exit 1
+    fi
     read -p "请输入要添加的随机 IPv6 地址数量: " COUNT
     if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
         echo "数量必须为整数。"
         exit 1
     fi
-    echo "在网卡 $SELECTED_IFACE 上添加 $COUNT 个随机 IPv6 地址，前缀为 $PREFIX"
-    for (( i=1; i<=COUNT; i++ ))
-    do
-        SUFFIX=$(head -c 8 /dev/urandom | xxd -p | sed 's/.\{4\}/&:/g;s/:$//')
-        FULL_ADDR="${PREFIX}:${SUFFIX}"
-        echo "添加地址: ${FULL_ADDR}/64"
-        ip -6 addr add "${FULL_ADDR}/64" dev "$SELECTED_IFACE"
-        echo "${FULL_ADDR}" >> /tmp/added_v6_ipv6.txt
+    for (( i=1; i<=COUNT; i++ )); do
+         RANDOM_ADDR=$(python3 -c "import ipaddress, random; net=ipaddress.ip_network('$BASE_ADDR/$PLEN', strict=False); print(ipaddress.IPv6Address(random.randint(int(net.network_address), int(net.broadcast_address))))")
+         echo "添加地址: ${RANDOM_ADDR}/${PLEN}"
+         ip -6 addr add "${RANDOM_ADDR}/${PLEN}" dev "$SELECTED_IFACE"
+         echo "${RANDOM_ADDR}/${PLEN}" >> /tmp/added_v6_ipv6.txt
     done
     echo "所有地址添加完成。"
 }
 
 function manage_default_ipv6() {
     choose_interface
-    echo "检测到以下IPv6地址（全局范围）:"
-    ipv6_list=($(ip -6 addr show dev "$SELECTED_IFACE" scope global | grep -oP 'inet6 \K[^/]+'))
+    echo "检测到以下IPv6地址（全局范围）："
+    mapfile -t ipv6_list < <(ip -6 addr show dev "$SELECTED_IFACE" scope global | awk '/inet6/ {print $2}')
     if [ ${#ipv6_list[@]} -eq 0 ]; then
         echo "网卡 $SELECTED_IFACE 上未检测到全局IPv6地址。"
         exit 1
@@ -83,7 +86,8 @@ function manage_default_ipv6() {
         echo "选择无效。"
         exit 1
     fi
-    SELECTED_IP="${ipv6_list[$((addr_choice-1))]}"
+    SELECTED_ENTRY="${ipv6_list[$((addr_choice-1))]}"
+    SELECTED_IP=$(echo "$SELECTED_ENTRY" | cut -d'/' -f1)
     echo "选择的默认出口IPv6地址为：$SELECTED_IP"
     GATEWAY=$(ip -6 route show default dev "$SELECTED_IFACE" | awk '/default/ {print $3}' | head -n1)
     if [ -z "$GATEWAY" ]; then
@@ -114,10 +118,10 @@ function delete_all_ipv6() {
         echo "未检测到已添加的IPv6地址记录文件。"
         exit 1
     fi
-    while read -r addr; do
-        if [ -n "$addr" ]; then
-            echo "删除地址: ${addr}/64"
-            ip -6 addr del "${addr}/64" dev "$SELECTED_IFACE"
+    while read -r entry; do
+        if [ -n "$entry" ]; then
+            echo "删除地址: $entry"
+            ip -6 addr del "$entry" dev "$SELECTED_IFACE"
         fi
     done < /tmp/added_v6_ipv6.txt
     rm -f /tmp/added_v6_ipv6.txt
@@ -132,22 +136,28 @@ function delete_except_default_ipv6() {
         exit 1
     fi
     echo "当前默认出口IPv6地址: $default_ip"
-    ips=($(ip -6 addr show dev "$SELECTED_IFACE" scope global | grep -oP 'inet6 \K[^/]+'))
-    for ip_addr in "${ips[@]}"; do
-        if [ "$ip_addr" != "$default_ip" ]; then
-            echo "删除地址: ${ip_addr}/64"
-            ip -6 addr del "${ip_addr}/64" dev "$SELECTED_IFACE"
-        fi
+    mapfile -t ip_entries < <(ip -6 addr show dev "$SELECTED_IFACE" scope global | awk '/inet6/ {print $2}')
+    for entry in "${ip_entries[@]}"; do
+         addr_only=$(echo "$entry" | cut -d'/' -f1)
+         if [ "$addr_only" != "$default_ip" ]; then
+             echo "删除地址: $entry"
+             ip -6 addr del "$entry" dev "$SELECTED_IFACE"
+         fi
     done
     echo "保留默认出口IPv6地址 $default_ip，其它IPv6地址已删除。"
     read -p "是否将当前配置写入 /etc/rc.local 以避免重启后失效？(y/n): " persist_choice
     if [[ "$persist_choice" =~ ^[Yy]$ ]]; then
-        if [ ! -f /etc/rc.local ]; then
-            echo "#!/bin/bash" > /etc/rc.local
-            chmod +x /etc/rc.local
-        fi
-        echo "ip -6 route change default via \"$(ip -6 route show default dev "$SELECTED_IFACE" | awk '/default/ {print $3}' | head -n1)\" dev \"$SELECTED_IFACE\" src \"$default_ip\"" >> /etc/rc.local
-        echo "配置已写入 /etc/rc.local 。"
+         gateway=$(ip -6 route show default dev "$SELECTED_IFACE" | awk '/default/ {print $3}' | head -n1)
+         if [ -z "$gateway" ]; then
+             echo "未检测到默认IPv6网关，无法写入配置。"
+         else
+             if [ ! -f /etc/rc.local ]; then
+                 echo "#!/bin/bash" > /etc/rc.local
+                 chmod +x /etc/rc.local
+             fi
+             echo "ip -6 route change default via \"$gateway\" dev \"$SELECTED_IFACE\" src \"$default_ip\"" >> /etc/rc.local
+             echo "配置已写入 /etc/rc.local 。"
+         fi
     fi
 }
 
