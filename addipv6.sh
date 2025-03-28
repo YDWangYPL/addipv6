@@ -69,6 +69,11 @@ function add_random_ipv6() {
         exit 1
     fi
 
+    # 生成日期
+    DATE=$(date +%Y%m%d)
+    # 定义文件名
+    FILENAME="/root/ipv6_$DATE.txt"
+
     # 执行循环随机添加
     for (( i=1; i<=COUNT; i++ )); do
         RANDOM_ADDR=$(python3 -c "import ipaddress, random; \
@@ -80,11 +85,19 @@ print(ipaddress.IPv6Address(random.randint(int(net.network_address), int(net.bro
         if [ $? -eq 0 ]; then
             # 记录添加成功的地址
             echo "${RANDOM_ADDR}/${PLEN}" >> /tmp/added_v6_ipv6.txt
+            # 生成随机八位用户名和密码
+            USERNAME=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 8 | head -n 1)
+            PASSWORD=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 8 | head -n 1)
+            # 假设端口号为 8080，可根据实际情况修改
+            PORT=8080
+            # 将结果写入文件
+            echo "$RANDOM_ADDR|$PORT|$USERNAME|$PASSWORD" >> "$FILENAME"
         else
             echo "添加 ${RANDOM_ADDR}/${PLEN} 失败，请检查系统日志或网络配置。"
         fi
     done
     echo "所有随机地址添加完成。"
+    echo "文件生成完成，文件目录和文件名: $FILENAME"
 }
 
 # 4. 管理默认出口 IPv6 地址
